@@ -1,11 +1,14 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
+import 'package:intl/intl.dart';
 import 'package:training_souls/api/user_service.dart';
 import 'package:training_souls/models/user.dart';
 import 'package:training_souls/models/user_response.dart';
 import 'package:training_souls/models/work_out.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:training_souls/providers/workout_provider.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
@@ -342,6 +345,35 @@ class DatabaseHelper {
     }
   }
 
+  Future<void> saveWorkoutsAndNotify(
+      List<Workout> workouts, WorkoutProvider provider) async {
+    // Lưu các bài tập vào database
+    for (var workout in workouts) {
+      await insertWorkout(workout);
+    }
+
+    // Thông báo cho provider để refresh dữ liệu
+    await provider.refreshAfterDatabaseChange();
+
+    debugPrint(
+        "✅ Đã lưu ${workouts.length} bài tập vào SQLite và cập nhật UI!");
+  }
+
+// Nếu bạn đã có hàm insertMultipleWorkouts, hãy sửa nó như sau:
+  Future<void> insertMultipleWorkouts(List<Workout> workouts,
+      {WorkoutProvider? provider}) async {
+    for (var workout in workouts) {
+      await insertWorkout(workout);
+    }
+
+    // Nếu provider được cung cấp, thông báo để refresh UI
+    if (provider != null) {
+      await provider.refreshAfterDatabaseChange();
+    }
+
+    debugPrint("✅ Đã lưu ${workouts.length} bài tập vào SQLite!");
+  }
+
   Future<int> markWorkoutAsCompleted(int workoutId) async {
     final db = await database;
 
@@ -465,19 +497,27 @@ class DatabaseHelper {
     }
   }
 
-  Future<List<Map<String, dynamic>>> getWorkoutsForDate(
-      String dateString) async {
-    final db = await database;
+// Trong DatabaseHelper.dart
+  Future<List<Map<String, dynamic>>> getWorkoutsForDate(String date) async {
+    try {
+      // Giả sử bạn có một API endpoint hoặc một phương thức database để lấy workouts trong ngày
+      // Thêm logic filter theo date ở đây, ví dụ:
+      List<Map<String, dynamic>> allWorkouts = await getAllWorkoutResults();
 
-    // Tìm tất cả kết quả tập luyện có ngày hoàn thành là ngày được chọn
-    // Chúng ta tìm kiếm bằng cách so sánh phần đầu của chuỗi ngày (YYYY-MM-DD)
-    final List<Map<String, dynamic>> results = await db.rawQuery('''
-    SELECT * FROM workout_results 
-    WHERE completed_date LIKE '$dateString%'
-    ORDER BY completed_date DESC
-  ''');
-
-    return results;
+      // Lọc theo ngày (chỉ so sánh phần ngày-tháng-năm, không quan tâm giờ)
+      return allWorkouts.where((workout) {
+        if (workout['createdAt'] == null) return false;
+        try {
+          DateTime createdDate = DateTime.parse(workout['createdAt']);
+          return DateFormat('yyyy-MM-dd').format(createdDate) == date;
+        } catch (e) {
+          return false;
+        }
+      }).toList();
+    } catch (e) {
+      debugPrint("Error in getWorkoutsForDate: $e");
+      return [];
+    }
   }
 
   // Lấy tất cả kết quả từ bảng workout_results
@@ -524,14 +564,10 @@ class DatabaseHelper {
   }
 
   // Cập nhật trạng thái bài tập
-  Future<void> updateWorkoutStatus(int id, String newStatus) async {
+  Future<int> updateWorkoutStatus(int workoutId, String newStatus) async {
     final db = await database;
-    await db.update(
-      'workouts',
-      {'status': newStatus},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return await db.update('workouts', {'status': newStatus},
+        where: 'id = ?', whereArgs: [workoutId]);
   }
 
   // Thêm user info
@@ -601,14 +637,12 @@ class DatabaseHelper {
   }
 
   // Phương thức lấy kết quả cho một ngày cụ thể và tên bài tập
+// Sửa hàm này trong DatabaseHelper
+  // Sửa hàm này trong DatabaseHelper
   Future<List<Map<String, dynamic>>> getExerciseResults(int day) async {
     final db = await database;
-    final List<Map<String, dynamic>> results = await db.query(
-      'workout_results',
-      where: 'day_number = ?',
-      whereArgs: [day],
-    );
-    return results;
+    return await db
+        .query('workout_results', where: 'day_number = ?', whereArgs: [day]);
   }
 
   Future<void> insertExerciseResult(int day, String exerciseName) async {
@@ -726,5 +760,17 @@ class DatabaseHelper {
       print("[DEBUG] ❌ Lỗi khi cập nhật thông tin từ API: $e");
       throw e;
     }
+  }
+
+  Future<void> clearAllData() async {
+    final db = await database;
+    await db.delete('workouts');
+    await db.delete('workout_results');
+  }
+
+  // Phương thức mới - chỉ xoá bảng workouts, giữ lại kết quả
+  Future<void> clearWorkoutsOnly() async {
+    final db = await database;
+    await db.delete('workouts');
   }
 }

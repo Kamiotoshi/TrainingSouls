@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
+
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:training_souls/data/DatabaseHelper.dart';
+import 'package:training_souls/providers/auth_provider.dart';
 import 'package:training_souls/providers/workout_provider.dart';
 import 'package:training_souls/screens/ol.dart';
-import 'package:training_souls/screens/trainhome.dart';
+import 'package:provider/provider.dart';
 
 class RunningTracker extends StatefulWidget {
   final int day;
@@ -58,7 +59,11 @@ class _RunningTrackerState extends State<RunningTracker> {
   Future<void> _saveWorkoutData() async {
     try {
       final dbHelper = DatabaseHelper();
+      final workoutProvider =
+          Provider.of<WorkoutProvider>(context, listen: false);
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
+      // Lưu kết quả bài tập
       final workoutResult = {
         "exerciseName": "Chạy bộ",
         "setsCompleted": 0,
@@ -71,11 +76,24 @@ class _RunningTrackerState extends State<RunningTracker> {
       if (kDebugMode) {
         print("[DEBUG] ✅ Đã lưu kết quả chạy bộ: $workoutResult");
       }
+
+      // Đồng bộ bài tập
       await dbHelper.checkAndSyncWorkouts(widget.day);
+
+      // Làm mới WorkoutProvider
       if (mounted) {
-        Navigator.pushReplacement(
+        await workoutProvider.refreshAfterDatabaseChange();
+        if (kDebugMode) {
+          print("[DEBUG] ✅ Đã làm mới WorkoutProvider");
+        }
+      }
+
+      // Chuyển hướng đến màn hình Ol và đảm bảo nó được khởi tạo lại
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => Ol()),
+          MaterialPageRoute(builder: (_) => const Ol()),
+          (route) => false, // Xóa tất cả các route trước đó
         );
       }
     } catch (e) {
@@ -83,7 +101,6 @@ class _RunningTrackerState extends State<RunningTracker> {
         print("[DEBUG] ❌ Lỗi khi lưu kết quả chạy bộ: $e");
       }
 
-      // Thêm kiểm tra mounted ở đây để tránh lỗi
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Lỗi khi lưu kết quả: $e")),
