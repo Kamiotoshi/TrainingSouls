@@ -12,7 +12,9 @@ import 'package:training_souls/screens/Khampha/teacher_screen.dart';
 import 'package:training_souls/data/local_storage.dart';
 import 'package:training_souls/screens/trainhome.dart';
 import 'dart:async'; // Thêm import Timer
-import 'package:training_souls/api/notification_service.dart';
+import 'package:training_souls/services/notification_service.dart';
+import 'package:training_souls/models/meal_suggestion.dart';
+import 'package:training_souls/services/premium_trial_manager.dart';
 
 class BeginnerDataWidget extends StatefulWidget {
   const BeginnerDataWidget({super.key});
@@ -27,6 +29,7 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
   final Map<int, bool> expandedDays = {};
   final dbHelper = DatabaseHelper();
   bool isUpdating = false;
+  bool hasExistingCoach = false; // Thêm biến để lưu trạng thái kiểm tra
 
   // Cache cho trạng thái hoàn thành
   final Map<String, bool> _completionCache = {};
@@ -152,9 +155,21 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
       _ensureDataLoaded();
       _syncWorkoutStatusFromResults();
       _loadScheduledTime();
-      _loadSelectedCoachId(); // Thêm dòng này
+      _loadSelectedCoachId();
       _startTimer();
+      checkExistingCoach();
+      _checkPremiumTrial(); // Thêm dòng này
     });
+  }
+
+  // Thêm hàm mới để kiểm tra thời gian dùng thử Premium
+  Future<void> _checkPremiumTrial() async {
+    try {
+      // Kiểm tra và hiển thị popup nếu hết thời gian dùng thử
+      await PremiumTrialManager.checkAndShowTrialExpiredPopup(context);
+    } catch (e) {
+      print("❌ Lỗi khi kiểm tra thời gian dùng thử: $e");
+    }
   }
 
   @override
@@ -291,112 +306,174 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
     return completedDays;
   }
 
-  void _showNutritionAdvice(int day) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        height: MediaQuery.of(context).size.height * 0.6,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              "Tư vấn dinh dưỡng - Ngày $day",
-              style: GoogleFonts.urbanist(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildMealSection(
-                      "Bữa sáng",
-                      Icons.breakfast_dining,
-                      [
-                        "2 quả trứng luộc",
-                        "1 lát bánh mì nguyên cám",
-                        "1 cốc sữa tươi không đường",
-                        "1 quả táo hoặc chuối"
-                      ],
-                    ),
-                    const SizedBox(height: 15),
-                    _buildMealSection(
-                      "Bữa trưa",
-                      Icons.restaurant,
-                      [
-                        "150g ức gà nướng",
-                        "1 chén cơm gạo lứt",
-                        "Rau xanh tùy thích",
-                        "1 chén súp rau củ"
-                      ],
-                    ),
-                    const SizedBox(height: 15),
-                    _buildMealSection(
-                      "Bữa tối",
-                      Icons.dinner_dining,
-                      [
-                        "150g cá hồi nướng",
-                        "Salad rau trộn",
-                        "1/2 chén cơm gạo lứt",
-                        "1 cốc sữa chua không đường"
-                      ],
-                    ),
-                    const SizedBox(height: 15),
-                    _buildMealSection(
-                      "Bữa phụ",
-                      Icons.fastfood,
-                      [
-                        "1 nắm hạt hỗn hợp",
-                        "Sinh tố protein sau tập",
-                        "Trái cây tươi",
-                        "Nước lọc (2-3 lít/ngày)"
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    Container(
-                      padding: const EdgeInsets.all(15),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFF0E6),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.info_outline,
-                            color: Color(0xFFFF6F00),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              "Lưu ý: Điều chỉnh khẩu phần theo nhu cầu cá nhân",
-                              style: GoogleFonts.urbanist(
-                                fontSize: 14,
-                                color: const Color(0xFFFF6F00),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+  // Thay đổi cách quản lý loading state
+  int? _loadingDay;
+
+  void _showNutritionAdvice(int day) async {
+    // Kiểm tra nếu ngày này đang loading thì không cho phép ấn tiếp
+    if (_loadingDay == day) return;
+
+    try {
+      setState(() {
+        _loadingDay = day;
+      });
+
+      // Lấy token
+      final token = await LocalStorage.getValidToken();
+      if (token == null) {
+        throw Exception("Token không tồn tại");
+      }
+
+      // Tìm workout cho ngày được chọn
+      final provider = Provider.of<WorkoutProvider>(context, listen: false);
+      final dayWorkouts = provider.workouts.where((w) => w.day == day).toList();
+
+      if (dayWorkouts.isEmpty || dayWorkouts.first.workoutDate == null) {
+        throw Exception("Không tìm thấy thông tin ngày tập");
+      }
+
+      // Format ngày theo yêu cầu của API
+      final workoutDate = DateTime.parse(dayWorkouts.first.workoutDate!);
+      final formattedDate =
+          "${workoutDate.year}-${workoutDate.month.toString().padLeft(2, '0')}-${workoutDate.day.toString().padLeft(2, '0')}";
+
+      // Gọi API với timeout
+      final dio = Dio();
+      dio.options.connectTimeout = const Duration(seconds: 5);
+      dio.options.receiveTimeout = const Duration(seconds: 5);
+
+      final response = await dio.get(
+        "http://54.251.220.228:8080/trainingSouls/meals/suggest?date=$formattedDate",
+        options: Options(
+          headers: {
+            "Authorization": "Bearer $token",
+          },
         ),
-      ),
-    );
+      );
+
+      if (response.statusCode == 200) {
+        final mealSuggestion = MealSuggestion.fromJson(response.data);
+
+        // Parse kết quả thành các phần thành dữ liệu 3 bữa rồi truyền vào thì chỉ có 1 bữa được hiển thị
+        //Nên việc còn lại thực ra chỉ là tách hiển thị thôi
+        final meals = mealSuggestion.result.split('\n\n');
+
+        if (!mounted) return;
+
+        showModalBottomSheet(
+          context: context,
+          backgroundColor: Colors.white,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          builder: (context) => Container(
+            padding: const EdgeInsets.all(20),
+            height: MediaQuery.of(context).size.height * 0.6,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Tư vấn dinh dưỡng - Ngày $day",
+                  style: GoogleFonts.urbanist(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: meals.map((meal) {
+                        final parts = meal.split('\n');
+                        final title = parts[0].replaceAll(':', '');
+
+                        // Tìm phần "Nên ăn" và "Không nên ăn"
+                        final shouldEatIndex =
+                            parts.indexWhere((p) => p.contains('- Nên ăn:'));
+                        final shouldNotEatIndex = parts
+                            .indexWhere((p) => p.contains('- Không nên ăn:'));
+
+                        // Lấy danh sách món nên ăn
+                        List<String> shouldEatItems = [];
+                        if (shouldEatIndex != -1) {
+                          final shouldEatText = parts[shouldEatIndex]
+                              .replaceAll('- Nên ăn:', '')
+                              .trim();
+                          shouldEatItems = shouldEatText
+                              .split(', ')
+                              .map((item) => item.trim())
+                              .toList();
+                        }
+
+                        // Lấy danh sách món không nên ăn
+                        List<String> shouldNotEatItems = [];
+                        if (shouldNotEatIndex != -1) {
+                          final shouldNotEatText = parts[shouldNotEatIndex]
+                              .replaceAll('- Không nên ăn:', '')
+                              .trim();
+                          shouldNotEatItems = shouldNotEatText
+                              .split(', ')
+                              .map((item) => item.trim())
+                              .toList();
+                        }
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildMealSection(
+                              title,
+                              _getMealIcon(title),
+                              shouldEatItems,
+                              shouldNotEatItems,
+                            ),
+                            const SizedBox(height: 15),
+                          ],
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      } else {
+        throw Exception("Lỗi khi lấy dữ liệu: ${response.statusCode}");
+      }
+    } catch (e) {
+      print("❌ Lỗi khi lấy tư vấn dinh dưỡng: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Có lỗi xảy ra: ${e.toString()}"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingDay = null;
+        });
+      }
+    }
   }
 
-  Widget _buildMealSection(String title, IconData icon, List<String> items) {
+  IconData _getMealIcon(String mealTitle) {
+    switch (mealTitle.toLowerCase()) {
+      case 'bữa sáng':
+        return Icons.breakfast_dining;
+      case 'bữa trưa':
+        return Icons.restaurant;
+      case 'bữa tối':
+        return Icons.dinner_dining;
+      default:
+        return Icons.fastfood;
+    }
+  }
+
+  Widget _buildMealSection(String title, IconData icon, List<String> shouldEat,
+      List<String> shouldNotEat) {
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
@@ -421,20 +498,60 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
             ],
           ),
           const SizedBox(height: 10),
-          ...items.map((item) => Padding(
-                padding: const EdgeInsets.only(left: 34, bottom: 5),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle,
-                        size: 16, color: Colors.green),
-                    const SizedBox(width: 8),
-                    Text(
-                      item,
-                      style: GoogleFonts.urbanist(fontSize: 14),
-                    ),
-                  ],
-                ),
-              )),
+          if (shouldEat.isNotEmpty) ...[
+            Text(
+              "Nên ăn:",
+              style: GoogleFonts.urbanist(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Colors.green,
+              ),
+            ),
+            const SizedBox(height: 5),
+            ...shouldEat.map((item) => Padding(
+                  padding: const EdgeInsets.only(left: 34, bottom: 5),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.check_circle,
+                          size: 16, color: Colors.green),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          item,
+                          style: GoogleFonts.urbanist(fontSize: 14),
+                        ),
+                      ),
+                    ],
+                  ),
+                )),
+          ],
+          if (shouldNotEat.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              "Không nên ăn:",
+              style: GoogleFonts.urbanist(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Colors.red,
+              ),
+            ),
+            const SizedBox(height: 5),
+            ...shouldNotEat.map((item) => Padding(
+                  padding: const EdgeInsets.only(left: 34, bottom: 5),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cancel, size: 16, color: Colors.red),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          item,
+                          style: GoogleFonts.urbanist(fontSize: 14),
+                        ),
+                      ),
+                    ],
+                  ),
+                )),
+          ],
         ],
       ),
     );
@@ -638,7 +755,7 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                 top: 10,
                 right: 10,
                 child: GestureDetector(
-                  onTap: () => _showNutritionAdvice(day),
+                  onTap: () => _handleNutritionButtonClick(day),
                   child: Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
@@ -652,15 +769,21 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                         ),
                       ],
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.restaurant_menu,
-                          color: Color(0xFFFF6F00),
-                          size: 20,
-                        ),
-                      ],
-                    ),
+                    child: _loadingDay == day
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                  Color(0xFFFF6F00)),
+                            ),
+                          )
+                        : const Icon(
+                            Icons.restaurant_menu,
+                            color: Color(0xFFFF6F00),
+                            size: 20,
+                          ),
                   ),
                 ),
               ),
@@ -1503,21 +1626,53 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
     );
   }
 
+  // Thêm biến để lưu timer cho đếm ngược
+  Timer? _countdownTimer;
+
+  void _startCountdownTimer(StateSetter setState) {
+    _countdownTimer?.cancel();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          // Cập nhật UI mỗi giây
+        });
+      }
+    });
+  }
+
   // Hàm hiển thị dialog đặt lịch
   void _showScheduleDialog(BuildContext context) {
     final now = DateTime.now();
-    final timeSlots = [
-      TimeOfDay(hour: 8, minute: 0),
-      TimeOfDay(hour: 10, minute: 0),
-      TimeOfDay(hour: 15, minute: 0),
-      TimeOfDay(hour: 23, minute: 23),
-    ];
+
+    // Lưu trữ thời gian đã chọn
+    DateTime? selectedTime;
+
+    // Xác định thời gian hiện tại cho giới hạn chọn lịch
+    final currentHour = now.hour;
+    final currentMinute = now.minute;
 
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return StatefulBuilder(
           builder: (context, setState) {
+            // Kiểm tra xem thời gian đã chọn có hợp lệ không (không phải thời gian đã qua)
+            bool isTimeValid() {
+              if (selectedTime == null) return false;
+
+              // Nếu là cùng ngày, kiểm tra giờ và phút
+              if (selectedTime!.year == now.year &&
+                  selectedTime!.month == now.month &&
+                  selectedTime!.day == now.day) {
+                return selectedTime!.hour > currentHour ||
+                    (selectedTime!.hour == currentHour &&
+                        selectedTime!.minute > currentMinute);
+              }
+
+              // Nếu là ngày khác, luôn hợp lệ
+              return selectedTime!.isAfter(now);
+            }
+
             return AlertDialog(
               title: Text(
                 'Chọn thời gian kiểm tra',
@@ -1525,174 +1680,397 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () => _showTrainerSelectionDialog(context),
-                        icon: const Icon(Icons.person),
-                        label: Text(
-                          _selectedTrainerId != null
-                              ? 'HLV: ${trainerInfo.values.firstWhere((t) => t['id'] == _selectedTrainerId)['name']}'
-                              : 'Chọn huấn luyện viên',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+              content: Container(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Chọn huấn luyện viên
+                      Container(
+                        width: double.infinity,
+                        child: !hasExistingCoach
+                            ? ElevatedButton.icon(
+                                onPressed: () =>
+                                    _showTrainerSelectionDialog(context),
+                                icon: const Icon(Icons.person),
+                                label: Text(
+                                  _selectedTrainerId != null
+                                      ? 'HLV: ${trainerInfo.values.firstWhere((t) => t['id'] == _selectedTrainerId)['name']}'
+                                      : 'Chọn huấn luyện viên',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _selectedTrainerId != null
+                                      ? Colors.green
+                                      : const Color(0xFFFF6B00),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 12,
+                                  ),
+                                ),
+                              )
+                            : Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.green.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.green,
+                                      size: 20,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Đã có huấn luyện viên',
+                                      style: GoogleFonts.urbanist(
+                                        color: Colors.green,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      // Chọn ngày
+                      Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
                         ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _selectedTrainerId != null
-                              ? Colors.green
-                              : const Color(0xFFFF6B00),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 8, horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Chọn ngày:',
+                              style: GoogleFonts.urbanist(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 15,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            InkWell(
+                              onTap: () async {
+                                final DateTime? pickedDate =
+                                    await showDatePicker(
+                                  context: context,
+                                  initialDate: now,
+                                  firstDate: now,
+                                  lastDate: now.add(const Duration(days: 30)),
+                                  builder: (context, child) {
+                                    return Theme(
+                                      data: Theme.of(context).copyWith(
+                                        colorScheme: const ColorScheme.light(
+                                          primary: Color(0xFFFF6B00),
+                                          onPrimary: Colors.white,
+                                        ),
+                                      ),
+                                      child: child!,
+                                    );
+                                  },
+                                );
+
+                                if (pickedDate != null) {
+                                  setState(() {
+                                    if (selectedTime != null) {
+                                      // Giữ nguyên giờ và phút, chỉ cập nhật ngày
+                                      selectedTime = DateTime(
+                                        pickedDate.year,
+                                        pickedDate.month,
+                                        pickedDate.day,
+                                        selectedTime!.hour,
+                                        selectedTime!.minute,
+                                      );
+                                    } else {
+                                      // Nếu chưa chọn giờ, mặc định là giờ hiện tại + 1
+                                      final defaultHour = (now.hour + 1) % 24;
+                                      selectedTime = DateTime(
+                                        pickedDate.year,
+                                        pickedDate.month,
+                                        pickedDate.day,
+                                        defaultHour,
+                                        0,
+                                      );
+                                    }
+                                  });
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 12, horizontal: 16),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      selectedTime != null
+                                          ? '${selectedTime!.day}/${selectedTime!.month}/${selectedTime!.year}'
+                                          : 'Chọn ngày',
+                                      style: GoogleFonts.urbanist(),
+                                    ),
+                                    const Icon(Icons.calendar_today, size: 20),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    ...timeSlots.map((slot) {
-                      final isAvailable = _isTimeSlotAvailable(slot);
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Container(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: isAvailable && _selectedTrainerId != null
-                                ? () async {
-                                    try {
-                                      final token =
-                                          await LocalStorage.getValidToken();
-                                      if (token == null) {
-                                        throw Exception("Token không tồn tại");
-                                      }
 
-                                      // Format date string cho API theo định dạng yyyy-MM-ddTHH:mm:00
-                                      final now = DateTime.now();
-                                      final scheduledDateTime = DateTime(
+                      const SizedBox(height: 16),
+
+                      // Chọn giờ
+                      Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 8, horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Chọn giờ:',
+                              style: GoogleFonts.urbanist(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 15,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            InkWell(
+                              onTap: () async {
+                                final TimeOfDay? pickedTime =
+                                    await showTimePicker(
+                                  context: context,
+                                  initialTime: selectedTime != null
+                                      ? TimeOfDay(
+                                          hour: selectedTime!.hour,
+                                          minute: selectedTime!.minute)
+                                      : TimeOfDay(
+                                          hour: (now.hour + 1) % 24, minute: 0),
+                                  builder: (context, child) {
+                                    return Theme(
+                                      data: Theme.of(context).copyWith(
+                                        colorScheme: const ColorScheme.light(
+                                          primary: Color(0xFFFF6B00),
+                                          onPrimary: Colors.white,
+                                        ),
+                                      ),
+                                      child: child!,
+                                    );
+                                  },
+                                );
+
+                                if (pickedTime != null) {
+                                  setState(() {
+                                    if (selectedTime != null) {
+                                      // Giữ nguyên ngày, chỉ cập nhật giờ và phút
+                                      selectedTime = DateTime(
+                                        selectedTime!.year,
+                                        selectedTime!.month,
+                                        selectedTime!.day,
+                                        pickedTime.hour,
+                                        pickedTime.minute,
+                                      );
+                                    } else {
+                                      // Nếu chưa chọn ngày, mặc định là ngày hiện tại
+                                      selectedTime = DateTime(
                                         now.year,
                                         now.month,
                                         now.day,
-                                        slot.hour,
-                                        slot.minute,
+                                        pickedTime.hour,
+                                        pickedTime.minute,
                                       );
+                                    }
+                                  });
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 12, horizontal: 16),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      selectedTime != null
+                                          ? '${selectedTime!.hour.toString().padLeft(2, '0')}:${selectedTime!.minute.toString().padLeft(2, '0')}'
+                                          : 'Chọn giờ',
+                                      style: GoogleFonts.urbanist(),
+                                    ),
+                                    const Icon(Icons.access_time, size: 20),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
 
-                                      // Đảm bảo định dạng đúng chuẩn yyyy-MM-ddTHH:mm:00
-                                      final dateStr =
-                                          "${scheduledDateTime.year}-"
-                                          "${scheduledDateTime.month.toString().padLeft(2, '0')}-"
-                                          "${scheduledDateTime.day.toString().padLeft(2, '0')}T"
-                                          "${scheduledDateTime.hour.toString().padLeft(2, '0')}:"
-                                          "${scheduledDateTime.minute.toString().padLeft(2, '0')}:00";
+                      const SizedBox(height: 24),
 
-                                      final dio = Dio();
-                                      dio.options.headers["Authorization"] =
-                                          "Bearer $token";
-                                      dio.options.headers["Content-Type"] =
-                                          "application/json";
+                      // Nút đặt lịch
+                      Container(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: (_selectedTrainerId != null &&
+                                  selectedTime != null &&
+                                  isTimeValid())
+                              ? () async {
+                                  try {
+                                    final token =
+                                        await LocalStorage.getValidToken();
+                                    if (token == null) {
+                                      throw Exception("Token không tồn tại");
+                                    }
 
-                                      // Gọi API với endpoint đúng format
-                                      final response = await dio.post(
-                                          "http://54.251.220.228:8080/trainingSouls/notifications/notifyCoachLevelTest/$dateStr");
+                                    // Format date string cho API theo định dạng yyyy-MM-ddTHH:mm:00
+                                    final dateStr = "${selectedTime!.year}-"
+                                        "${selectedTime!.month.toString().padLeft(2, '0')}-"
+                                        "${selectedTime!.day.toString().padLeft(2, '0')}T"
+                                        "${selectedTime!.hour.toString().padLeft(2, '0')}:"
+                                        "${selectedTime!.minute.toString().padLeft(2, '0')}:00";
 
-                                      if (response.statusCode == 200) {
-                                        await _saveScheduledTime(
-                                            scheduledDateTime);
-                                        this.setState(() {
-                                          _scheduledTime = scheduledDateTime;
-                                        });
-                                        Navigator.pop(context);
-                                        if (!context.mounted) return;
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              'Đã đặt lịch kiểm tra lúc ${slot.hour}:${slot.minute.toString().padLeft(2, '0')} với ${trainerInfo.values.firstWhere((t) => t['id'] == _selectedTrainerId)['name']}',
-                                            ),
-                                            backgroundColor: Colors.green,
-                                          ),
-                                        );
-                                        Navigator.pushAndRemoveUntil(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (context) =>
-                                                const Trainhome(),
-                                          ),
-                                          (Route<dynamic> route) => false,
-                                        );
-                                      } else {
-                                        throw Exception(
-                                            "Lỗi khi gửi thông báo: ${response.statusCode}");
-                                      }
-                                    } catch (e) {
-                                      print("❌ Lỗi khi gửi thông báo: $e");
-                                      if (e is DioException) {
-                                        print(
-                                            "Response data: ${e.response?.data}");
-                                        print(
-                                            "Response status: ${e.response?.statusCode}");
-                                      }
+                                    final dio = Dio();
+                                    dio.options.headers["Authorization"] =
+                                        "Bearer $token";
+                                    dio.options.headers["Content-Type"] =
+                                        "application/json";
+
+                                    // Gọi API với endpoint đúng format
+                                    final response = await dio.post(
+                                        "http://54.251.220.228:8080/trainingSouls/notifications/notifyCoachLevelTest/$dateStr");
+
+                                    if (response.statusCode == 200) {
+                                      await _saveScheduledTime(selectedTime!);
+                                      this.setState(() {
+                                        _scheduledTime = selectedTime;
+                                      });
+
+                                      // Thêm thông báo nhắc nhở trước 1 phút
+                                      final notificationTime = selectedTime!
+                                          .subtract(Duration(minutes: 1));
+                                      await NotificationService()
+                                          .scheduleNotification(
+                                        title: 'Chuẩn bị kiểm tra! ⏰',
+                                        body:
+                                            'Bạn có lịch kiểm tra với ${trainerInfo.values.firstWhere((t) => t['id'] == _selectedTrainerId)['name']} trong 1 phút nữa! 💪',
+                                        scheduledDate: notificationTime,
+                                      );
+                                      Navigator.pop(context);
                                       if (!context.mounted) return;
                                       ScaffoldMessenger.of(context)
                                           .showSnackBar(
                                         SnackBar(
                                           content: Text(
-                                              "Có lỗi xảy ra khi đặt lịch: ${e.toString()}"),
-                                          backgroundColor: Colors.red,
+                                            'Đã đặt lịch kiểm tra lúc ${selectedTime!.hour.toString().padLeft(2, '0')}:${selectedTime!.minute.toString().padLeft(2, '0')} ngày ${selectedTime!.day}/${selectedTime!.month}/${selectedTime!.year} với ${trainerInfo.values.firstWhere((t) => t['id'] == _selectedTrainerId)['name']}',
+                                          ),
+                                          backgroundColor: Colors.green,
                                         ),
                                       );
+                                      Navigator.pushAndRemoveUntil(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              const Trainhome(),
+                                        ),
+                                        (Route<dynamic> route) => false,
+                                      );
+                                    } else {
+                                      throw Exception(
+                                          "Lỗi khi gửi thông báo: ${response.statusCode}");
                                     }
+                                  } catch (e) {
+                                    print("❌ Lỗi khi gửi thông báo: $e");
+                                    if (e is DioException) {
+                                      print(
+                                          "Response data: ${e.response?.data}");
+                                      print(
+                                          "Response status: ${e.response?.statusCode}");
+                                    }
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                            "Có lỗi xảy ra khi đặt lịch: ${e.toString()}"),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
                                   }
-                                : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor:
-                                  isAvailable && _selectedTrainerId != null
-                                      ? Colors.green
-                                      : Colors.grey,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 32,
-                                vertical: 12,
-                              ),
-                            ),
-                            child: Text(
-                              '${slot.hour}:${slot.minute.toString().padLeft(2, '0')}',
-                              style: GoogleFonts.urbanist(
-                                color: Colors.white,
-                                fontSize: 16,
-                              ),
+                                }
+                              : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: (_selectedTrainerId != null &&
+                                    selectedTime != null &&
+                                    isTimeValid())
+                                ? Colors.green
+                                : Colors.grey,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 16,
                             ),
                           ),
-                        ),
-                      );
-                    }).toList(),
-                    if (!timeSlots.any((slot) => _isTimeSlotAvailable(slot)))
-                      Padding(
-                        padding: const EdgeInsets.only(top: 16),
-                        child: Text(
-                          'Vui lòng đăng ký kiểm tra vào ngày hôm sau',
-                          style: GoogleFonts.urbanist(
-                            color: Colors.red,
-                            fontWeight: FontWeight.w500,
+                          child: Text(
+                            'Đặt lịch kiểm tra',
+                            style: GoogleFonts.urbanist(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                          textAlign: TextAlign.center,
                         ),
                       ),
-                    if (_selectedTrainerId == null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 16),
-                        child: Text(
-                          'Vui lòng chọn huấn luyện viên trước khi đặt lịch',
-                          style: GoogleFonts.urbanist(
-                            color: Colors.orange,
-                            fontWeight: FontWeight.w500,
+
+                      // Thông báo lỗi nếu có
+                      if (selectedTime != null && !isTimeValid())
+                        Padding(
+                          padding: const EdgeInsets.only(top: 16),
+                          child: Text(
+                            'Không thể chọn thời gian đã qua. Vui lòng chọn thời gian khác.',
+                            style: GoogleFonts.urbanist(
+                              color: Colors.red,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
                           ),
-                          textAlign: TextAlign.center,
                         ),
-                      ),
-                  ],
+                      if (!hasExistingCoach && _selectedTrainerId == null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 16),
+                          child: Text(
+                            'Vui lòng chọn huấn luyện viên trước khi đặt lịch',
+                            style: GoogleFonts.urbanist(
+                              color: Colors.orange,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -1729,65 +2107,198 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
             response.result?.accountType?.toLowerCase() ?? 'basic';
 
         if (accountType != 'premium') {
-          // Hiển thị dialog thông báo cần mua Premium
-          showDialog(
+          // Hiển thị dialog thiết kế mới cho yêu cầu Premium
+          showGeneralDialog(
             context: context,
-            builder: (BuildContext context) {
-              return AlertDialog(
-                title: Text(
-                  'Yêu cầu Premium',
-                  style: GoogleFonts.urbanist(
-                    fontWeight: FontWeight.bold,
+            barrierDismissible: true,
+            barrierLabel: 'Dismiss',
+            barrierColor: Colors.black.withOpacity(0.6),
+            transitionDuration: const Duration(milliseconds: 300),
+            pageBuilder: (_, __, ___) {
+              return Center(
+                child: Container(
+                  margin: EdgeInsets.symmetric(horizontal: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
                   ),
-                ),
-                content: Text(
-                  'Bạn cần mua Premium để được huấn luyện viên kiểm tra.',
-                  style: GoogleFonts.urbanist(),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                    },
-                    child: Text(
-                      'Hủy',
-                      style: GoogleFonts.urbanist(color: Colors.grey),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      showGeneralDialog(
-                        context: context,
-                        barrierLabel: 'Dismiss',
-                        barrierColor: Colors.black.withOpacity(0.5),
-                        transitionDuration: const Duration(milliseconds: 300),
-                        pageBuilder: (_, __, ___) {
-                          return AccountTypePopup(
-                            selectedOption: 'Basic',
-                            options: ['Basic', 'Premium'],
-                            onSelected: (selectedType) {
-                              print("🔶 Người dùng đã chọn gói: $selectedType");
-                            },
-                          );
-                        },
-                        transitionBuilder: (_, animation, __, child) {
-                          return Transform.scale(
-                            scale: animation.value,
-                            child: Opacity(
-                              opacity: animation.value,
-                              child: child,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Material(
+                      color: Colors.white,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Banner gradient header
+                          Container(
+                            width: double.infinity,
+                            padding: EdgeInsets.symmetric(vertical: 25),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [Color(0xFFFF6F00), Color(0xFFFF6F00)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
                             ),
-                          );
-                        },
-                      );
-                    },
-                    child: Text(
-                      'Mua Premium',
-                      style: GoogleFonts.urbanist(color: Colors.green),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  Icons.workspace_premium,
+                                  color: Colors.white,
+                                  size: 48,
+                                ),
+                                SizedBox(height: 10),
+                                Text(
+                                  'Tính năng Premium',
+                                  style: GoogleFonts.urbanist(
+                                    color: Colors.white,
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          // Content
+                          Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Column(
+                              children: [
+                                Text(
+                                  'Kiểm tra bởi Huấn luyện viên',
+                                  style: GoogleFonts.urbanist(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  'Tính năng này yêu cầu tài khoản Premium để sử dụng. '
+                                  'Nâng cấp ngay để được huấn luyện viên kiểm tra và nhận phản hồi chuyên sâu.',
+                                  style: GoogleFonts.urbanist(
+                                    fontSize: 16,
+                                    color: Colors.grey.shade700,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                SizedBox(height: 24),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.check_circle_outline,
+                                        'Phản hồi chi tiết',
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.schedule,
+                                        'Phản hồi nhanh',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 16),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.video_call,
+                                        'Tư vấn trực tiếp',
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.insert_chart,
+                                        'Phân tích dữ liệu',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 32),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    showGeneralDialog(
+                                      context: context,
+                                      barrierLabel: 'Dismiss',
+                                      barrierColor:
+                                          Colors.black.withOpacity(0.5),
+                                      transitionDuration:
+                                          const Duration(milliseconds: 300),
+                                      pageBuilder: (_, __, ___) {
+                                        return AccountTypePopup(
+                                          selectedOption: 'Basic',
+                                          options: ['Basic', 'Premium'],
+                                          onSelected: (selectedType) {
+                                            print(
+                                                "🔶 Người dùng đã chọn gói: $selectedType");
+                                          },
+                                        );
+                                      },
+                                      transitionBuilder:
+                                          (_, animation, __, child) {
+                                        return Transform.scale(
+                                          scale: animation.value,
+                                          child: Opacity(
+                                            opacity: animation.value,
+                                            child: child,
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Color(0xFFFF6F00),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    padding: EdgeInsets.symmetric(vertical: 15),
+                                    minimumSize: Size(double.infinity, 50),
+                                  ),
+                                  child: Text(
+                                    'Nâng cấp Premium',
+                                    style: GoogleFonts.urbanist(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: 16),
+                                TextButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                  },
+                                  child: Text(
+                                    'Để sau',
+                                    style: GoogleFonts.urbanist(
+                                      fontSize: 16,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ],
+                ),
+              );
+            },
+            transitionBuilder: (_, animation, __, child) {
+              return FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(
+                  scale: CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutBack,
+                  ),
+                  child: child,
+                ),
               );
             },
           );
@@ -1805,6 +2316,28 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
         ),
       );
     }
+  }
+
+// Helper widget để hiển thị các tính năng Premium
+  Widget _buildFeatureItem(IconData icon, String text) {
+    return Column(
+      children: [
+        Icon(
+          icon,
+          color: Color(0xFFFF6F00),
+          size: 28,
+        ),
+        SizedBox(height: 8),
+        Text(
+          text,
+          style: GoogleFonts.urbanist(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
   }
 
   bool _isTestTimeReached() {
@@ -1835,6 +2368,9 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
         if (_scheduledTime != null) {
           return StatefulBuilder(
             builder: (context, setState) {
+              // Bắt đầu timer khi dialog hiển thị
+              _startCountdownTimer(setState);
+
               final now = DateTime.now();
               final difference = _scheduledTime!.difference(now);
 
@@ -1884,122 +2420,467 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                 );
               }
 
-              return AlertDialog(
-                title: Text(
-                  'Thời gian còn lại',
-                  style: GoogleFonts.urbanist(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
+              return Dialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Container(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF6F00).withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.timer,
+                          color: Color(0xFFFF6F00),
+                          size: 40,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Thời gian còn lại',
+                        style: GoogleFonts.urbanist(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF6F00).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '${difference.inHours}h ${difference.inMinutes.remainder(60)}m ${difference.inSeconds.remainder(60)}s',
+                          style: GoogleFonts.urbanist(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF00FF22),
+                          ),
+                        ),
+                      ),
+                      if (_selectedTrainerId != null) ...[
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.person,
+                              color: Color(0xFFFF6F00),
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'HLV: ${trainerInfo.values.firstWhere((t) => t['id'] == _selectedTrainerId)['name']}',
+                              style: GoogleFonts.urbanist(
+                                fontSize: 16,
+                                color: const Color(0xFFFF6F00),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: Text(
+                          'Đóng',
+                          style: GoogleFonts.urbanist(
+                            color: Colors.grey[600],
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Còn ${difference.inHours} giờ ${difference.inMinutes.remainder(60)} phút ${difference.inSeconds.remainder(60)} giây',
-                      style: GoogleFonts.urbanist(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Đã đặt lịch kiểm tra lúc ${_scheduledTime!.hour}:${_scheduledTime!.minute.toString().padLeft(2, '0')}',
-                      style: GoogleFonts.urbanist(
-                        color: Colors.grey,
-                      ),
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                    },
-                    child: Text(
-                      'Đóng',
-                      style: GoogleFonts.urbanist(color: Colors.grey),
-                    ),
-                  ),
-                ],
               );
             },
           );
         }
 
-        return AlertDialog(
-          title: Text(
-            'Chọn hình thức kiểm tra',
-            style: GoogleFonts.urbanist(
-              fontWeight: FontWeight.bold,
-            ),
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const VideoCallScreen(),
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 32,
-                    vertical: 12,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF6F00).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.sports_score,
+                    color: Color(0xFFFF6F00),
+                    size: 40,
                   ),
                 ),
-                child: Text(
-                  'Gọi ngay',
+                const SizedBox(height: 20),
+                Text(
+                  'Chọn hình thức kiểm tra',
                   style: GoogleFonts.urbanist(
-                    color: Colors.white,
-                    fontSize: 16,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              if (_scheduledTime == null)
-                ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _showScheduleDialog(context);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 32,
-                      vertical: 12,
+                const SizedBox(height: 12),
+                Text(
+                  'Bạn có thể chọn kiểm tra ngay hoặc đặt lịch cho thời điểm khác',
+                  style: GoogleFonts.urbanist(
+                    fontSize: 16,
+                    color: Colors.grey[600],
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const VideoCallScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.video_call),
+                    label: Text(
+                      'Gọi ngay',
+                      style: GoogleFonts.urbanist(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                   ),
+                ),
+                const SizedBox(height: 12),
+                if (_scheduledTime == null)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showScheduleDialog(context);
+                      },
+                      icon: const Icon(Icons.calendar_today),
+                      label: Text(
+                        'Đặt lịch',
+                        style: GoogleFonts.urbanist(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFF6F00),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
                   child: Text(
-                    'Đặt lịch',
+                    'Hủy',
                     style: GoogleFonts.urbanist(
-                      color: Colors.white,
+                      color: Colors.grey[600],
                       fontSize: 16,
                     ),
                   ),
                 ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              child: Text(
-                'Hủy',
-                style: GoogleFonts.urbanist(color: Colors.grey),
-              ),
+              ],
             ),
-          ],
+          ),
         );
       },
-    );
+    ).then((_) {
+      // Hủy timer khi dialog đóng
+      _countdownTimer?.cancel();
+    });
   }
+
+  // Thêm hàm kiểm tra huấn luyện viên
+  Future<void> checkExistingCoach() async {
+    try {
+      final token = await LocalStorage.getValidToken();
+      if (token == null) {
+        throw Exception("Token không tồn tại");
+      }
+
+      final dio = Dio();
+      final response = await dio.get(
+        "http://54.251.220.228:8080/trainingSouls/users/checkExistCoach",
+        options: Options(
+          headers: {
+            "Authorization": "Bearer $token",
+          },
+        ),
+      );
+
+      if (response.statusCode == 200) {
+        setState(() {
+          hasExistingCoach = response.data == true;
+        });
+      }
+    } catch (e) {
+      print("❌ Lỗi khi kiểm tra huấn luyện viên: $e");
+    }
+  }
+
+  Future<void> _handleNutritionButtonClick(int day) async {
+    try {
+      final token = await LocalStorage.getValidToken();
+      if (token == null) {
+        throw Exception("Token không tồn tại");
+      }
+
+      final dio = Dio();
+      final client = UserService(dio);
+      final response = await client.getMyInfo("Bearer $token");
+
+      if (response.code == 0 && response.result != null) {
+        final accountType =
+            response.result?.accountType?.toLowerCase() ?? 'basic';
+
+        if (accountType != 'premium') {
+          // Hiển thị dialog thiết kế mới cho yêu cầu Premium
+          showGeneralDialog(
+            context: context,
+            barrierDismissible: true,
+            barrierLabel: 'Dismiss',
+            barrierColor: Colors.black.withOpacity(0.6),
+            transitionDuration: const Duration(milliseconds: 300),
+            pageBuilder: (_, __, ___) {
+              return Center(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Material(
+                      color: Colors.white,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Banner gradient header
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(vertical: 25),
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [Color(0xFFFF6F00), Color(0xFFFF6F00)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                            ),
+                            child: Column(
+                              children: [
+                                const Icon(
+                                  Icons.workspace_premium,
+                                  color: Colors.white,
+                                  size: 48,
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  'Tính năng Premium',
+                                  style: GoogleFonts.urbanist(
+                                    color: Colors.white,
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          // Content
+                          Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              children: [
+                                Text(
+                                  'Tư vấn dinh dưỡng chuyên sâu',
+                                  style: GoogleFonts.urbanist(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'Tính năng này yêu cầu tài khoản Premium để sử dụng. '
+                                  'Nâng cấp ngay để nhận tư vấn dinh dưỡng chi tiết và chuyên sâu.',
+                                  style: GoogleFonts.urbanist(
+                                    fontSize: 16,
+                                    color: Colors.grey.shade700,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 24),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.restaurant_menu,
+                                        'Thực đơn chi tiết',
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.timer,
+                                        'Lịch ăn uống',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 16),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.health_and_safety,
+                                        'Dinh dưỡng cân bằng',
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: _buildFeatureItem(
+                                        Icons.trending_up,
+                                        'Theo dõi tiến độ',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 32),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    showGeneralDialog(
+                                      context: context,
+                                      barrierLabel: 'Dismiss',
+                                      barrierColor:
+                                          Colors.black.withOpacity(0.5),
+                                      transitionDuration:
+                                          const Duration(milliseconds: 300),
+                                      pageBuilder: (_, __, ___) {
+                                        return AccountTypePopup(
+                                          selectedOption: 'Basic',
+                                          options: ['Basic', 'Premium'],
+                                          onSelected: (selectedType) {
+                                            print(
+                                                "🔶 Người dùng đã chọn gói: $selectedType");
+                                          },
+                                        );
+                                      },
+                                      transitionBuilder:
+                                          (_, animation, __, child) {
+                                        return Transform.scale(
+                                          scale: animation.value,
+                                          child: Opacity(
+                                            opacity: animation.value,
+                                            child: child,
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFFF6F00),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 15),
+                                    minimumSize:
+                                        const Size(double.infinity, 50),
+                                  ),
+                                  child: Text(
+                                    'Nâng cấp Premium',
+                                    style: GoogleFonts.urbanist(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                TextButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                  },
+                                  child: Text(
+                                    'Để sau',
+                                    style: GoogleFonts.urbanist(
+                                      fontSize: 16,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+            transitionBuilder: (_, animation, __, child) {
+              return FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(
+                  scale: CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutBack,
+                  ),
+                  child: child,
+                ),
+              );
+            },
+          );
+        } else {
+          // Nếu là tài khoản Premium, gọi hàm hiển thị tư vấn dinh dưỡng
+          _showNutritionAdvice(day);
+        }
+      }
+    } catch (e) {
+      print("❌ Lỗi khi kiểm tra loại tài khoản: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Có lỗi xảy ra: ${e.toString()}"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
 }
