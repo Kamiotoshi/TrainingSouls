@@ -15,7 +15,7 @@ import 'dart:async'; // Thêm import Timer
 import 'package:training_souls/services/notification_service.dart';
 import 'package:training_souls/models/meal_suggestion.dart';
 import 'package:training_souls/services/premium_trial_manager.dart';
-import '../../../offline/SyncStatusWidget.dart';
+
 
 class BeginnerDataWidget extends StatefulWidget {
   const BeginnerDataWidget({super.key});
@@ -938,13 +938,12 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
 
   // Hàm trả về màu dựa trên số lượng bài tập đã hoàn thành
   Color _getCompletionColor(int completedCount, int totalCount) {
-    if (completedCount == 0) {
-      return Colors.red.withOpacity(0.8); // Chưa hoàn thành bài nào thì màu đỏ
-    } else if (completedCount >= 4) {
-      return Colors.green
-          .withOpacity(0.8); // Hoàn thành từ 4 bài trở lên thì màu xanh
+    if (completedCount >= totalCount) {
+      return Colors.green.withOpacity(0.8); // Hoàn thành tất cả bài tập
+    } else if (completedCount == 0) {
+      return Colors.red.withOpacity(0.8); // Chưa hoàn thành bài nào
     } else {
-      return Colors.orange.withOpacity(0.8); // Hoàn thành 1-3 bài thì màu vàng
+      return Colors.orange.withOpacity(0.8); // Hoàn thành một số bài tập
     }
   }
 
@@ -1074,13 +1073,7 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                   color: Colors.white.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: Text(
-                  "30 phút",
-                  style: GoogleFonts.urbanist(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+
               ),
             ],
           ),
@@ -1098,7 +1091,7 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
             runSpacing: 10,
             children: [
               _buildTestFeature(Icons.fitness_center, "5 bài tập"),
-              _buildTestFeature(Icons.timer, "30 phút"),
+              // _buildTestFeature(Icons.timer, "30 phút"),
               _buildTestFeature(Icons.emoji_events, "Chứng nhận"),
             ],
           ),
@@ -2540,7 +2533,7 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Bạn có thể chọn kiểm tra ngay hoặc đặt lịch cho thời điểm khác',
+                  'Bạn hãy đặt lịch kiểm tra',
                   style: GoogleFonts.urbanist(
                     fontSize: 16,
                     color: Colors.grey[600],
@@ -2548,36 +2541,36 @@ class _BeginnerDataWidgetState extends State<BeginnerDataWidget> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const VideoCallScreen(),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.video_call),
-                    label: Text(
-                      'Gọi ngay',
-                      style: GoogleFonts.urbanist(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                ),
+                // SizedBox(
+                //   width: double.infinity,
+                //   child: ElevatedButton.icon(
+                //     onPressed: () {
+                //       Navigator.pop(context);
+                //       Navigator.push(
+                //         context,
+                //         MaterialPageRoute(
+                //           builder: (context) => const VideoCallScreen(),
+                //         ),
+                //       );
+                //     },
+                //     icon: const Icon(Icons.video_call),
+                //     label: Text(
+                //       'Gọi ngay',
+                //       style: GoogleFonts.urbanist(
+                //         fontSize: 16,
+                //         fontWeight: FontWeight.bold,
+                //         color: Colors.white,
+                //       ),
+                //     ),
+                //     style: ElevatedButton.styleFrom(
+                //       backgroundColor: Colors.green,
+                //       padding: const EdgeInsets.symmetric(vertical: 16),
+                //       shape: RoundedRectangleBorder(
+                //         borderRadius: BorderRadius.circular(12),
+                //       ),
+                //     ),
+                //   ),
+                // ),
                 const SizedBox(height: 12),
                 if (_scheduledTime == null)
                   SizedBox(

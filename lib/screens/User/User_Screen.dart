@@ -12,6 +12,7 @@ import '../../APi/user_service.dart';
 import '../../data/local_storage.dart';
 import 'PurchasedItemsPage.dart';
 import '../Home/home.dart';
+import 'settings_screen.dart';
 
 class UserProfilePage extends StatefulWidget {
   const UserProfilePage({super.key});
@@ -257,22 +258,18 @@ class _UserScreenState extends State<UserProfilePage>
                   ListTile(
                     leading: const Icon(Icons.settings),
                     title: const Text("Cài đặt & Bảo mật"),
-                    onTap: () {},
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.language),
-                    title: const Text("Ngôn ngữ"),
-                    onTap: () {},
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (context) => const SettingsScreen()),
+                      );
+                    },
                   ),
                   ListTile(
                     leading: const Icon(Icons.shopping_bag),
                     title: const Text("Sản Phẩm Đã Mua"),
                     onTap: navigateToPurchasedItemsPage,
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.dark_mode),
-                    title: const Text("Chế độ tối"),
-                    trailing: Switch(value: false, onChanged: (val) {}),
                   ),
                   const Divider(),
                   ListTile(
